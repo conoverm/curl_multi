@@ -4,7 +4,9 @@
  */
 
 namespace TestingCurlMulti;
-include "adama_login.php";
+include('adama.php');
+
+use \Adama\Login as adama;
 
 class curl_multi {
 
@@ -18,9 +20,9 @@ class curl_multi {
 
     function register_adama_session(){
 
-        $login_data = array('user'=>\login_info\ADAMA_USER,
-                            'password'=>\login_info\ADAMA_PASSWORD,
-                            'api_key'=>\login_info\ADAMA_API_KEY);
+        $login_data = array('user'=>adama::user,
+                            'password'=>adama::password,
+                            'api_key'=>adama::api_key);
 
         $login_form_data = http_build_query($login_data);
 
@@ -30,7 +32,7 @@ class curl_multi {
 
         curl_setopt($ch_adama_login , CURLOPT_STDERR, $verbose);
         curl_setopt($ch_adama_login, CURLOPT_POST, true);
-        curl_setopt($ch_adama_login, CURLOPT_URL, \login_info\ADAMA_LOGIN_URL);
+        curl_setopt($ch_adama_login, CURLOPT_URL, adama::login_url);
         curl_setopt($ch_adama_login, CURLOPT_POSTFIELDS, $login_form_data);
         curl_setopt_array($ch_adama_login, $this->curl_global_opts);
 
@@ -116,7 +118,6 @@ class curl_multi {
     }
 
 }
-
 
 //$login = new curl_multi();
 //$login->register_adama_session();
