@@ -10,7 +10,21 @@ use \Adama\Login as adama;
 
 class curl_multi {
 
-    protected $api_base = "http://t1qa2.mediamath.com/api/v2.0/";
+
+    public $adama_urls = array();
+
+    public $adama_results = array();
+
+    public $collection_to_get = "agencies";
+
+    public $testing_url = adama::api_base;
+
+    // This is the pointer for a list of entities. If there are 60 entities in a request, and the offset is
+    // 20, then Adama will return the last 40 entities. Generally, this starts at 0 and grows by 100 each request.
+    public $page_offset = 0;
+
+    // Adama limits returning entities to a max of 100 per call.
+    public $page_limit = 100;
 
     protected $curl_global_opts = array (
                                     CURLOPT_RETURNTRANSFER => true,
@@ -47,60 +61,31 @@ class curl_multi {
 
     }
 
+    /**
+     * Execute a single curl to find out if we need to execute more (which will lead to curl_multi).
+     * Save the single executed curl in an array and return that so it's not executed twice.
+     */
     function executeCurl(){
-        $testing_url = "https://t1qa2.mediamath.com/api/v2.0/atomic_creatives/";
+
+        $testing_url = adama::api_base.$this->collection_to_get;
 
         $ch = curl_init();
         curl_setopt_array($ch, $this->curl_global_opts);
 
         curl_setopt($ch, CURLOPT_URL, $testing_url);
-        curl_setopt($ch, CURLOPT_VERBOSE, 1);
+        curl_setopt($ch, CURLOPT_VERBOSE, 0);
 
         $ch_response = curl_exec($ch);
 
         curl_close($ch);
 
-        print_r($ch_response);
+        $this->parseXML($ch_response);
 
     }
 
-    function executeMultiCurl(){
+    function parseXML($testCurl){
 
-        // GET that returns a gazillion entities. ~110k, page limited by 100.
-        $testing_url = "https://t1qa2.mediamath.com/api/v2.0/atomic_creatives/";
-
-        $results = null;
-
-        $mch = curl_multi_init();
-
-        $ch = curl_init();
-
-        curl_setopt($ch, CURLOPT_URL, $testing_url);
-        curl_setopt_array($ch, $this->curl_global_opts);
-
-        curl_multi_add_handle($mch, $ch);
-
-        $curl_multi_running = NULL;
-
-        do {
-            $mrc = curl_multi_exec($mch, $curl_multi_running);
-            curl_multi_select($mch);
-        } while ($curl_multi_running > 0);
-
-
-        curl_multi_remove_handle($mch, $ch);
-
-        curl_multi_close($mch);
-
-        $results = curl_exec($ch);
-
-        $this->parseMultiXML($results);
-
-    }
-
-    function parseMultiXML($results){
-
-        $_sx = simplexml_load_string ($results, 'SimpleXmlElement', LIBXML_NOERROR+LIBXML_ERR_FATAL+LIBXML_ERR_NONE);
+        $_sx = simplexml_load_string($testCurl, 'SimpleXmlElement', LIBXML_NOERROR+LIBXML_ERR_FATAL+LIBXML_ERR_NONE);
 
         if (false == $_sx){
             echo "ADAMA DIDN'T RETURN XML, SORRY";
@@ -108,22 +93,112 @@ class curl_multi {
         }
 
         if (!isset( $_sx->entities['count'] ) ){
-            echo "apparently no entities? That's weird.";
+            echo "Apparently no entities? That's weird.";
+            return $_sx;
         }
 
-        echo($_sx->entities['count'] . "\n");
+        // We have a successful request -- add the first page to the results array.
+        $this->adama_results[0]=$testCurl;
 
-        echo( ceil($_sx->entities['count'] / 100));
+        // if 'count' minus 'start' is greater than 100, we have to do an async curl to get the rest of the entities.
+        if (($_sx->entities['count'] - $_sx->entities['start']) > 100){
+            $this->buildUrlArray($_sx->entities['count'] );
+        }
 
     }
+
+    function buildUrlArray($entityCount){
+
+        if ($entityCount < $this->page_limit){
+            echo "\$entityCount is $entityCount" .' which is lower than the $page_offset: '."$this->page_offset".' , so we have all the entities.';
+            // dump the results back to whatever is consuming it
+            return;
+        }
+
+        for ($i = 0;  $i < $entityCount; $i+=100){
+            // start the loop at 1 not 0, because the first URL is the URL already executed
+            array_push($this->adama_urls, adama::api_base . $this->collection_to_get .'?'."page_limit=$this->page_limit&page_offset=$i");
+            //echo($this->adama_urls[$i] . "\n");
+        }
+
+        $this->throttle_curl($this->adama_urls, $this->curl_global_opts);
+
+    }
+
+    function throttle_curl($urls, $options = null) {
+
+        // make sure the rolling window isn't greater than the # of urls
+        $throttle_multi = 5;
+
+        if (count($urls) < $throttle_multi){
+            $throttle_multi = count($urls);
+        }
+
+        $master = curl_multi_init();
+
+        // start the first batch of requests
+        for ($i = 0; $i < $throttle_multi; $i++) {
+                $ch = curl_init();
+                $options[CURLOPT_URL] = $urls[$i];
+                curl_setopt_array($ch,$options);
+                curl_multi_add_handle($master, $ch);
+            }
+
+        do {
+            while(($execrun = curl_multi_exec($master, $running)) == CURLM_CALL_MULTI_PERFORM);
+
+                if($execrun != CURLM_OK){
+                    break;
+                }
+
+                while($done = curl_multi_info_read($master)) {
+
+                    $info = curl_getinfo($done['handle']);
+
+                    if ($info['http_code'] == 200)  {
+                        $output = curl_multi_getcontent($done['handle']);
+
+                        // request successful.
+                        $this->sortOutput($output);
+
+                        $ch = curl_init();
+
+                        if ($i < count($urls)){
+                            $options[CURLOPT_URL] = $urls[$i++];  // increment i
+                            curl_setopt_array($ch,$options);
+                            curl_multi_add_handle($master, $ch);
+
+                            // remove the curl handle that just completed
+                            curl_multi_remove_handle($master, $done['handle']);
+                        } else {
+                            break;
+                        }
+
+                    } else {
+                        var_dump($info);
+                    }
+                }
+        } while ($running);
+
+        curl_multi_close($master);
+        ksort($this->adama_results);
+        return true;
+    }
+
+    function sortOutput($output){
+        $_sx = simplexml_load_string($output, 'SimpleXmlElement', LIBXML_NOERROR+LIBXML_ERR_FATAL+LIBXML_ERR_NONE);
+        $array_entry = $_sx->entities['start'] *.01;
+        $this->adama_results[$array_entry] = $output;
+    }
+
 
 }
 
 //$login = new curl_multi();
 //$login->register_adama_session();
 
-//$testing_curl = new curl_multi();
-//$testing_curl->executeCurl();
+$testing_curl = new curl_multi();
+$testing_curl->executeCurl();
 
-$testing_multi = new curl_multi();
-$testing_multi->executeMultiCurl();
+//$testing_multi = new curl_multi();
+//$testing_multi->executeMultiCurl();
