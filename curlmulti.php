@@ -116,9 +116,7 @@ class curl_multi {
         }
 
         for ($i = 0;  $i < $entityCount; $i+=100){
-            // start the loop at 1 not 0, because the first URL is the URL already executed
             array_push($this->adama_urls, adama::api_base . $this->collection_to_get .'?'."page_limit=$this->page_limit&page_offset=$i");
-            //echo($this->adama_urls[$i] . "\n");
         }
 
         $this->throttle_curl($this->adama_urls, $this->curl_global_opts);
@@ -128,7 +126,7 @@ class curl_multi {
     function throttle_curl($urls, $options = null) {
 
         // make sure the rolling window isn't greater than the # of urls
-        $throttle_multi = 5;
+        $throttle_multi = 9;
 
         if (count($urls) < $throttle_multi){
             $throttle_multi = count($urls);
@@ -175,7 +173,7 @@ class curl_multi {
                         }
 
                     } else {
-                        var_dump($info);
+                        error_log(date('c').' FAILED CURL. $info:' . "\n" . print_r($info, true) . "\n", 3, 'curl_multi.log', FILE_APPEND);
                     }
                 }
         } while ($running);
